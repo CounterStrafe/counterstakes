@@ -5,4 +5,5 @@
             :url "https://www.eclipse.org/legal/epl-2.0/"}
   :dependencies [[org.clojure/clojure "1.10.0"]
                  [org.suskalo/discljord "0.2.5"]]
+  :main counterstakes.core/-main
   :repl-options {:init-ns counterstakes.core})

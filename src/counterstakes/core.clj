@@ -6,7 +6,7 @@
             [counterstakes.secerets :as sec]
             [clojure.string :as str]))
 
-(def state (atom {:password sec/default-pw}))
+(def state (atom nil))
 
 (defmulti handle-event
   (fn [event-type event-data]
@@ -24,12 +24,12 @@
 
 (defmethod handle-event "!cs-change-password"
   [event-type {:keys [channel-id content]}]
-  (let [split-content (str/split content)
-        pw (get 2 split-content)
-        new-pw (get 3 split-content)]
-    (when (and (= 3 split-content)
+  (let [split-content (str/split content #" ")
+        pw (get split-content 1)
+        new-pw (get split-content 2)]
+    (when (and (= 3 (count split-content))
                (= (hash pw) (:password @state)))
-      (swap! state assoc :password (hash (new-pw)))
+      (swap! state assoc :password (hash new-pw))
       (m/create-message! (:messaging @state) channel-id :content "Updated!"))))
 
 (defmethod handle-event "!hello"
@@ -43,7 +43,8 @@
         messaging-ch (m/start-connection! sec/token)
         init-state {:connection connection-ch
                     :event event-ch
-                    :messaging messaging-ch}]
+                    :messaging messaging-ch
+                    :password sec/default-pw}]
     (reset! state init-state)
     (e/message-pump! event-ch handle-event)
     (m/stop-connection! messaging-ch)
