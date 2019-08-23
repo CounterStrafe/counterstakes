@@ -1,14 +1,10 @@
 # counterstakes
 
-A Clojure library designed to ... well, that part is up to you.
-
-## Usage
-
-FIXME
+A Clojure library designed to gamble your money away!
 
 ## License
 
-Copyright © 2019 FIXME
+Copyright © 2019
 
 This program and the accompanying materials are made available under the
 terms of the Eclipse Public License 2.0 which is available at
