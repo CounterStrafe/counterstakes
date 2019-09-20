@@ -3,6 +3,7 @@
             [discljord.messaging :as m]
             [discljord.events :as e]
             [clojure.core.async :as a]
+            [clojure.string :as s]
             [counterstakes.secerets :as sec]
             [clojure.string :as str]
             [taoensso.carmine :as car :refer (wcar)]))
@@ -19,6 +20,10 @@
     "1" "2"
     "2" "1"
     :default "0"))
+
+(defn format-2
+  [vec2]
+  (str (first vec2) "   =>   " (second vec2)))
 
 (defmulti handle-event
   (fn [event-type event-data]
@@ -49,13 +54,17 @@
       (m/create-message! (:messaging @state) channel-id :content "Updated!"))))
 
 (defmethod handle-event "!balance"
-  [event-type {{id :id} :author, :keys [channel-id]}]
+  [event-type {{username :username id :id} :author, :keys [channel-id]}]
   (let [balance (wcar* (car/hget :users id))]
     (if balance
       (m/create-message! (:messaging @state) channel-id
                          :content (str balance))
       (do
-        (wcar* (car/hset :users id 100))
+        (wcar* (car/multi)
+               (car/hset :users id 100)
+               (car/lpush :usernames username)
+               (car/lpush :user-ids id)
+               (car/exec))
         (m/create-message! (:messaging @state) channel-id
                            :content (str (wcar* (car/hget :users id))))))))
 
@@ -104,12 +113,20 @@
                                                "\n" ratio)))))))
 
 (defmethod handle-event "!bet"
-  [event-type {{user-id :id} :author, :keys [id channel-id content]}]
+  [event-type {{username :username user-id :id} :author, :keys [id channel-id content]}]
   (let [split-content (str/split content #" ")
         team (get split-content 1)
         amount (Integer. (get split-content 2))
         user-balance-str (wcar* (car/hget :users user-id))
-        user-balance (if (nil? user-balance-str) (do (wcar* (car/hset :users user-id 100)) 100) (Integer. user-balance-str))
+        user-balance (if (nil? user-balance-str)
+                       (do (wcar*
+                            (car/multi)
+                            (car/hset :users user-id 100)
+                            (car/lpush :usernames username)
+                            (car/lpush :user-ids user-id)
+                            (car/exec))
+                           100)
+                       (Integer. user-balance-str))
         {game-id :game-id
          messaging :messaging
          open? :open?} @state]
@@ -123,7 +140,6 @@
             old-team (wcar* (car/hget game-id (str user-id ":team")))]
         (when (and old-amount old-team)
           (wcar* (car/hincrby game-id (str old-team ":total") (* -1 (Integer. old-amount))))
-          (wcar* (car/srem (str game-id ":all") user-id))
           (wcar* (car/srem (str game-id ":1") user-id))
           (wcar* (car/srem (str game-id ":2") user-id)))
         (wcar*
@@ -131,7 +147,6 @@
          (car/hset game-id (str user-id ":team") team)
          (car/hset game-id (str user-id ":amount") amount)
          (car/hincrby game-id (str team ":total") amount)
-         (car/sadd (str game-id ":all") user-id)
          (car/sadd (str game-id ":" team) user-id)
          (car/exec)))
       (m/create-reaction! messaging channel-id id \u2705))))
@@ -167,6 +182,21 @@
               (wcar* (car/hset :users loser total-balance)))))
         (m/create-message! messaging dac
                            :content (str "Team " team " wins the bet!"))))))
+
+(defmethod handle-event "!top"
+  [event-type {:keys [content channel-id]}]
+  (let [usernames (wcar* (car/lrange :usernames 0 -1))
+        ids (wcar* (car/lrange :user-ids 0 -1))
+        {game-id :game-id
+         messaging :messaging} @state]
+    (m/create-message! messaging channel-id
+                       :content (s/join "\n"
+                                      (map format-2
+                                           (take 10
+                                                 (reverse
+                                                  (sort-by second
+                                                           (mapv #(vector %1 (Integer. (wcar* (car/hget :users %2))))
+                                                                 usernames ids)))))))))
 
 (defmethod handle-event "!hello"
   [event-type {:keys [channel-id]}]
