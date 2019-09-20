@@ -13,6 +13,13 @@
 
 (def state (atom nil))
 
+(defn flip-team
+  [team]
+  (case team
+    "1" "2"
+    "2" "1"
+    :default "0"))
+
 (defmulti handle-event
   (fn [event-type event-data]
     (when (and
@@ -101,6 +108,8 @@
   (let [split-content (str/split content #" ")
         team (get split-content 1)
         amount (Integer. (get split-content 2))
+        user-balance-str (wcar* (car/hget :users user-id))
+        user-balance (if (nil? user-balance-str) (do (wcar* (car/hset :users user-id 100)) 100) (Integer. user-balance-str))
         {game-id :game-id
          messaging :messaging
          open? :open?} @state]
@@ -109,16 +118,21 @@
            (or (= team "1") (= team "2"))
            (= 3 (count split-content))
            (> amount 0)
-           (< amount (Integer. (wcar* (car/hget :users user-id)))))
+           (<= amount user-balance))
       (let [old-amount (wcar* (car/hget game-id (str user-id ":amount")))
             old-team (wcar* (car/hget game-id (str user-id ":team")))]
         (when (and old-amount old-team)
-          (wcar* (car/hincrby game-id (str old-team ":total") (* -1 (Integer. old-amount)))))
+          (wcar* (car/hincrby game-id (str old-team ":total") (* -1 (Integer. old-amount))))
+          (wcar* (car/srem (str game-id ":all") user-id))
+          (wcar* (car/srem (str game-id ":1") user-id))
+          (wcar* (car/srem (str game-id ":2") user-id)))
         (wcar*
          (car/multi)
          (car/hset game-id (str user-id ":team") team)
          (car/hset game-id (str user-id ":amount") amount)
          (car/hincrby game-id (str team ":total") amount)
+         (car/sadd (str game-id ":all") user-id)
+         (car/sadd (str game-id ":" team) user-id)
          (car/exec)))
       (m/create-reaction! messaging channel-id id \u2705))))
 
@@ -129,13 +143,30 @@
         team (get split-content 2)
         {game-id :game-id
          messaging :messaging
+         dac :default-announcement-channel
          open? :open?
          password :password} @state]
     (when (and
            (= (hash pw) password)
            (or (= team "1") (= team "2")))
-      ;;todo
-      )))
+      (let [winners-ids (wcar* (car/smembers (str game-id ":" team)))
+            loser-ids (wcar* (car/smembers (str game-id ":" (flip-team team))))
+            w-str (wcar* (car/hget game-id (str team ":total")))
+            l-str (wcar* (car/hget game-id (str (flip-team team) ":total")))
+            winning (if (nil? w-str) 0.0 (Float. w-str))
+            losing (if (nil? l-str) 0.0 (Float. l-str))
+            ratio (if (= winning 0) 0 (/ losing winning))]
+        (doseq [winner winners-ids]
+          (wcar* (car/hincrby :users winner (int (* ratio (Integer. (wcar* (car/hget game-id (str winner ":amount")))))))))
+        (doseq [loser loser-ids]
+          (let [losses (int (* -1 (Integer. (wcar* (car/hget game-id (str loser ":amount"))))))
+                current-balance (Integer. (wcar* (car/hget :users loser)))
+                total-balance (+ losses current-balance)]
+            (if (< total-balance 100)
+              (wcar* (car/hset :users loser 100))
+              (wcar* (car/hset :users loser total-balance)))))
+        (m/create-message! messaging dac
+                           :content (str "Team " team " wins the bet!"))))))
 
 (defmethod handle-event "!hello"
   [event-type {:keys [channel-id]}]
