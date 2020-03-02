@@ -6,7 +6,8 @@
             [clojure.string :as s]
             [counterstakes.secerets :as sec]
             [clojure.string :as str]
-            [taoensso.carmine :as car :refer (wcar)]))
+            [taoensso.carmine :as car :refer (wcar)])
+  (:gen-class))
 
 (def server1-conn {:pool {} :spec {:uri "redis://127.0.0.1:6379/0"}})
 (defmacro wcar* [& body] `(car/wcar server1-conn ~@body))
@@ -54,19 +55,20 @@
       (m/create-message! (:messaging @state) channel-id :content "Updated!"))))
 
 (defmethod handle-event "!balance"
-  [event-type {{username :username id :id} :author, :keys [channel-id]}]
+  [event-type {{username :username id :id disc :discriminator} :author, :keys [channel-id]}]
   (let [balance (wcar* (car/hget :users id))]
-    (if balance
-      (m/create-message! (:messaging @state) channel-id
-                         :content (str balance))
-      (do
-        (wcar* (car/multi)
-               (car/hset :users id 100)
-               (car/lpush :usernames username)
-               (car/lpush :user-ids id)
-               (car/exec))
+    (when (= channel-id (str sec/bot-channel))
+      (if balance
         (m/create-message! (:messaging @state) channel-id
-                           :content (str (wcar* (car/hget :users id))))))))
+                           :content (str "<@" id "> " balance))
+        (do
+          (wcar* (car/multi)
+                 (car/hset :users id 100)
+                 (car/lpush :usernames username)
+                 (car/lpush :user-ids id)
+                 (car/exec))
+          (m/create-message! (:messaging @state) channel-id
+                             :content (str "<@" id "> " (wcar* (car/hget :users id)))))))))
 
 (defmethod handle-event "!create-bet"
   [event-type {:keys [content]}]
@@ -76,7 +78,6 @@
         team1 (get split-content 3)
         team2 (get split-content 4)
         {messaging :messaging
-         dac :default-announcement-channel
          betting-time :betting-time
          password :password} @state]
     (when (and (= 5 (count split-content))
@@ -89,7 +90,7 @@
             :game-id game-id
             :team1 team1
             :team2 team2)
-      (m/create-message! messaging dac
+      (m/create-message! messaging sec/bot-channel
                          :content (str "Bets are now open for game " game-id
                                        "\n" team1 " vs " team2 "!"
                                        "\ntype ```!bet 1 <amount>``` to bet on " team1
@@ -103,20 +104,26 @@
                   t2-total (if (nil? t2-total-str) 0.0 (Float. t2-total-str))
                   ratio (cond
                           (and (= t1-total 0.0) (= t2-total 0.0)) "0:0"
-                          (= t1-total 0.0) "0:1"
-                          (= t2-total 0.0) "1:0"
-                          (> t1-total t2-total) (str (/ t1-total t2-total) ":" "1")
-                          :default (str "1" ":" (/ t2-total t1-total)))]
-              (m/create-message! messaging dac
+                          (= t1-total 0.0) "0.00:1.00"
+                          (= t2-total 0.0) "1.00:0.00"
+                          (> t1-total t2-total) (str (format "%.2f" (/ t1-total t2-total)) " : " "1.00")
+                          :default (str "1.00" " : " (format "%.2f" (/ t2-total t1-total))))]
+              (m/create-message! messaging sec/bot-channel
                                  :content (str "Bets are now closed!"
                                                "\n" "Ratio in: " team1 " : " team2
-                                               "\n" ratio)))))))
+                                               "\n```" ratio "```")))))))
 
 (defmethod handle-event "!bet"
   [event-type {{username :username user-id :id} :author, :keys [id channel-id content]}]
-  (let [split-content (str/split content #" ")
+  (let [{game-id :game-id
+         messaging :messaging
+         open? :open?} @state
+        split-content (str/split content #" ")
         team (get split-content 1)
-        amount (Integer. (get split-content 2))
+        amount (try (Integer. (get split-content 2))
+                    (catch Exception e
+                      (m/create-reaction! messaging channel-id id \u274C)
+                      (throw (Exception. "wrong input format"))))
         user-balance-str (wcar* (car/hget :users user-id))
         user-balance (if (nil? user-balance-str)
                        (do (wcar*
@@ -126,16 +133,14 @@
                             (car/lpush :user-ids user-id)
                             (car/exec))
                            100)
-                       (Integer. user-balance-str))
-        {game-id :game-id
-         messaging :messaging
-         open? :open?} @state]
-    (when (and
-           open?
-           (or (= team "1") (= team "2"))
-           (= 3 (count split-content))
-           (> amount 0)
-           (<= amount user-balance))
+                       (Integer. user-balance-str))]
+    (if (and
+         open?
+         (= channel-id (str sec/bot-channel))
+         (or (= team "1") (= team "2"))
+         (= 3 (count split-content))
+         (> amount 0)
+         (<= amount user-balance))
       (let [old-amount (wcar* (car/hget game-id (str user-id ":amount")))
             old-team (wcar* (car/hget game-id (str user-id ":team")))]
         (when (and old-amount old-team)
@@ -148,8 +153,9 @@
          (car/hset game-id (str user-id ":amount") amount)
          (car/hincrby game-id (str team ":total") amount)
          (car/sadd (str game-id ":" team) user-id)
-         (car/exec)))
-      (m/create-reaction! messaging channel-id id \u2705))))
+         (car/exec))
+        (m/create-reaction! messaging channel-id id \u2705))
+      (m/create-reaction! messaging channel-id id \u274C))))
 
 (defmethod handle-event "!pay"
   [event-type {:keys [content]}]
@@ -158,7 +164,6 @@
         team (get split-content 2)
         {game-id :game-id
          messaging :messaging
-         dac :default-announcement-channel
          open? :open?
          password :password} @state]
     (when (and
@@ -170,7 +175,7 @@
             l-str (wcar* (car/hget game-id (str (flip-team team) ":total")))
             winning (if (nil? w-str) 0.0 (Float. w-str))
             losing (if (nil? l-str) 0.0 (Float. l-str))
-            ratio (if (= winning 0) 0 (/ losing winning))]
+            ratio (if (= winning 0.0) 0 (/ losing winning))]
         (doseq [winner winners-ids]
           (wcar* (car/hincrby :users winner (int (* ratio (Integer. (wcar* (car/hget game-id (str winner ":amount")))))))))
         (doseq [loser loser-ids]
@@ -180,7 +185,8 @@
             (if (< total-balance 100)
               (wcar* (car/hset :users loser 100))
               (wcar* (car/hset :users loser total-balance)))))
-        (m/create-message! messaging dac
+        (wcar* car/bgsave)
+        (m/create-message! messaging sec/bot-channel
                            :content (str "Team " team " wins the bet!"))))))
 
 (defmethod handle-event "!top"
@@ -189,14 +195,36 @@
         ids (wcar* (car/lrange :user-ids 0 -1))
         {game-id :game-id
          messaging :messaging} @state]
-    (m/create-message! messaging channel-id
-                       :content (s/join "\n"
-                                      (map format-2
-                                           (take 10
-                                                 (reverse
-                                                  (sort-by second
-                                                           (mapv #(vector %1 (Integer. (wcar* (car/hget :users %2))))
-                                                                 usernames ids)))))))))
+    (when (= channel-id (str sec/bot-channel))
+        (m/create-message! messaging channel-id
+                           :content (s/join "\n"
+                                            (map format-2
+                                                 (take 10
+                                                       (reverse
+                                                        (sort-by second
+                                                                 (mapv #(vector %1 (Integer. (wcar* (car/hget :users %2))))
+                                                                       usernames ids))))))))))
+
+(defmethod handle-event "!help"
+  [event-type {:keys [channel-id]}]
+  (m/create-message! (:messaging @state) channel-id
+                     :content (str "This bot will allow you to participate in our fake money betting markets!"
+                                   " The person who will have the most money at the end of the tournament will"
+                                   " win a :trophy: MP9 StatTrak Ruby Poison Dart skin :trophy:"
+                                   "\n\n Here are the commands available:"
+
+                                   "\n```!balance - checks your current balance. You can never go under 100 credits. It is recommended "
+                                   "to go all in if your bet would otherwise leave you wih less than 100 credits```"
+                                   
+                                   "\n```!bet <team-number> <amount> - Bet credits on a specific team. This command "
+                                   "can only be used when a betting market is open. These are only for streamed games "
+                                   "and will be announced in #general. You have 3 minutes from the time a betting market opens to place a bet. "
+                                   "Making a new bet will override your previous bet.```"
+                                   
+                                   "\n ```!top - shows the top 10 highest balances.```"
+
+                                   "\n To avoid spam in the #general channel, we will block all commands coming from there. "
+                                   "We recommend using #bot-commands or DMing the bot. ")))
 
 (defmethod handle-event "!hello"
   [event-type {:keys [channel-id]}]
@@ -211,8 +239,7 @@
                     :event event-ch
                     :messaging messaging-ch
                     :password sec/default-pw
-                    :default-announcement-channel sec/default-announcement-channel
-                    :betting-time 60000}]
+                    :betting-time 180000}]
     (reset! state init-state)
     (e/message-pump! event-ch handle-event)
     (m/stop-connection! messaging-ch)

@@ -6,5 +6,6 @@
   :dependencies [[org.clojure/clojure "1.10.0"]
                  [org.suskalo/discljord "0.2.5"]
                  [com.taoensso/carmine "2.19.1"]]
-  :main counterstakes.core/-main
+  :main counterstakes.core
+  :aot [counterstakes.core]
   :repl-options {:init-ns counterstakes.core})
