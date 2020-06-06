@@ -210,7 +210,7 @@
   (m/create-message! (:messaging @state) channel-id
                      :content (str "This bot will allow you to participate in our fake money betting markets!"
                                    " The person who will have the most money at the end of the tournament will"
-                                   " win a :trophy: MP9 StatTrak Ruby Poison Dart skin :trophy:"
+                                   " win a :trophy: AWP Fever Dream skin :trophy:"
                                    "\n\n Here are the commands available:"
 
                                    "\n```!balance - checks your current balance. You can never go under 100 credits. It is recommended "
@@ -218,13 +218,13 @@
                                    
                                    "\n```!bet <team-number> <amount> - Bet credits on a specific team. This command "
                                    "can only be used when a betting market is open. These are only for streamed games "
-                                   "and will be announced in #general. You have 3 minutes from the time a betting market opens to place a bet. "
+                                   "and will be announced in #betting-commands. You have 3 minutes from the time a betting market opens to place a bet. "
                                    "Making a new bet will override your previous bet.```"
                                    
                                    "\n ```!top - shows the top 10 highest balances.```"
 
                                    "\n To avoid spam in the #general channel, we will block all commands coming from there. "
-                                   "We recommend using #bot-commands or DMing the bot. ")))
+                                   "We recommend using #betting-commands. ")))
 
 (defmethod handle-event "!hello"
   [event-type {:keys [channel-id]}]
